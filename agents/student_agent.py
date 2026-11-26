@@ -1,293 +1,244 @@
+
 """Student agent: edit ONLY this file."""
 from agents.agent import Agent
 from store import register_agent
 from helpers import (Move, get_valid_moves, execute_move, check_winner,
-                     check_endgame, random_move, copy_state, top_view, LINES, state_key)
+                     check_endgame, random_move, copy_state, top_view, LINES)
 from constants import *
 import numpy as np
 import time
-import math
 
-#----------------------------------------------------------------------
-EXACT = 0
-BETA = 1
-ALPHA = 2
 
-class SearchTimeout(Exception):
-    """Raised when the search approaches STEP_TIME_LIMIT."""
-    pass
-#-----------------------------------------------------------------------
-
-@register_agent("student_agent")          # do not change this string
+@register_agent("student_agent") # do not change this string
 class StudentAgent(Agent):
     def __init__(self):
         """Set up your agent. This runs once per game, before the first move, and must finish
         within INIT_TIME_LIMIT seconds."""
         super().__init__()
         self.name = "StudentAgent"
-       
-        #----------------------------------------------------------------
-        self.time_margin = 0.20
-        self.deadline = 0.0
-        self.nodes_visited = 0
-        # state_key(board, reserves, active_player), [transpose_depth, transpose_flag,
-        #                            transpose_score, transpose_move]
-        self.transpose: dict[bytes, tuple[int, int, float, Move | None]] = {}
-        #---------------------------------------------------------------
+        self.rng = np.random.default_rng()
 
     def step(self, board, reserves, player, opponent):
-        """Return the Move you want to play.
-
-        Takes: board, reserves - your own copies of the current position.
-               player, opponent - your player number (1 or 2) and the other one.
-        Agent.step in agents/agent.py explains each argument and the time limit.
-        """
+        """Return the Move you want to play."""
         start = time.perf_counter()
-        # ALLOW_MOVES and WIN_LENGTH (from constants) are the rule flags of this game.
-        # helpers.get_valid_moves / check_winner already respect them; your own
-        # move generator and evaluation function must too.
-        # TODO: replace with your search. Keep (time.perf_counter() - start) < STEP_TIME_LIMIT - margin.
+        max_time = start + 1.7 # to make sure we dont pass the time 2s
+        valid_moves = get_valid_moves(board, reserves, player)
+        if not valid_moves:
+            return random_move(board, reserves, player)
 
-        self.deadline = start + STEP_TIME_LIMIT - self.time_margin
-        self.nodes_visited = 0
-        self.transpose.clear()
+        # check if already have a winning move
+        for mv in valid_moves:
+            b, r = copy_state(board, reserves)
+            execute_move(b, r, player, mv)
+            if check_winner(b, player) == player:
+                return mv
 
-        allow_moves = bool(ALLOW_MOVES)
         win_length = int(WIN_LENGTH)
         lines = LINES[win_length]
+        best_move = valid_moves[0] # take first one will update later anyways
+        best_table = {}
 
-        valid_moves = get_valid_moves(board, reserves, player, allow_moves)
-        if not valid_moves:
-            return random_move(board, reserves, player, allow_moves=allow_moves)
-        if len(valid_moves) == 1:
-            return valid_moves[0]
+        def eval_board(b, r): # FOR MINIMAX
+            # state of board, reserve) evaluated from player's perspective
+            score = 0.0
+            center_coords = {(1, 1), (1, 2), (2, 1), (2, 2)}
+            grid_size = b.shape[0]
+            corner_coords = {(0, 0), (0, grid_size - 1), (grid_size - 1, 0), (grid_size - 1, grid_size - 1)}
+            size_weights = (2, 5, 10)
+            threat_len = win_length - 1
 
+            owners, sizes = top_view(b) # see top piece of all cells
+            own_list = owners.tolist()
+            size_list = sizes.tolist()
 
-        best_move = self._order_moves(board, valid_moves, opponent, None)[0]
-       
-        # 4X4 board size
-        for depth in range(1, 16):
-            if time.perf_counter() >= self.deadline:
-                break
-            try:
-                score, move = self._alphabeta(
-                    board=board,
-                    reserves=reserves,
-                    depth=depth,
-                    alpha=-math.inf,
-                    beta=math.inf,
-                    maximizing=True,
-                    player=player,
-                    opponent=opponent,
-                    last_mover=opponent,
-                    allow_moves=allow_moves,
-                    win_length=win_length,
-                    lines=lines
-                )
-                if move is not None:
-                    best_move = move
-                if score >= 90000:
-                    break
-            except SearchTimeout:
-                break
+            #new HEURISTICS
+            #line threats: add bonus when we forme winning line, substract for opponement winning line
+            # https://www.cs.trincoll.edu/~ram/cpsc352/notes/heuristics.html
+            for line in lines:
+                player_count = 0
+                opponent_count = 0
+                player_large = 0
+                opponent_large = 0
+                blocked = False
 
-        return best_move
+                for row, col in line:
+                    o = own_list[row][col]
+                    if o == OBSTACLE: #also ignores OBSTACLE 
+                        blocked = True
+                        break
+                    elif o == player:
+                        player_count += 1
+                        if size_list[row][col] == LARGE:
+                            player_large += 1
+                    elif o == opponent:
+                        opponent_count += 1
+                        if size_list[row][col] == LARGE:
+                            opponent_large += 1
 
-    def _alphabeta(self, board: np.ndarray, reserves: np.ndarray, depth: int,
-                   alpha: float, beta: float, maximizing: bool,
-                   player: int, opponent: int, last_mover: int,
-                   allow_moves: bool, win_length: int, lines) -> tuple[float, Move | None]:
-       
-        self.nodes_visited += 1
-        if (self.nodes_visited % 100) == 0:
-            if time.perf_counter() >= self.deadline:
-                raise SearchTimeout()
-           
-        winner = check_winner(board, last_mover, win_length)
-        if winner == player:
-            return 100000 + depth, None
-        elif winner == opponent:
-            return -100000 - depth, None
+                if blocked:
+                    continue
 
-        active_player = player if maximizing else opponent
-        initial_alpha = alpha
+                if player_count > 0 and opponent_count == 0:
+                    score += (14 ** player_count) + (player_large * 5)
+                    if player_count == threat_len:
+                        score += 40.0
+                elif opponent_count > 0 and player_count == 0:
+                    score -= (15 ** opponent_count) + (opponent_large * 6)
+                    if opponent_count == threat_len:
+                        score -= 50.0
 
-        key = state_key(board, reserves, active_player)
-        transpose_move = None
-        transpose_entry = self.transpose.get(key)
-        if transpose_entry is not None:
-            transpose_depth, transpose_flag, transpose_score, transpose_move = transpose_entry
-            if transpose_depth >= depth:
-                if transpose_flag == EXACT:
-                    return transpose_score, transpose_move
-                elif transpose_flag == BETA:
-                    alpha = max(alpha, transpose_score)
-                elif transpose_flag == ALPHA:
-                    beta = min(beta, transpose_score)
-                if alpha >= beta:
-                    return transpose_score, transpose_move
+            #give bonus if in the center (want to prioritize center) 
+            for r_idx in range(grid_size):
+                for c_idx in range(grid_size):
+                    owner = own_list[r_idx][c_idx]
+                    if owner > 0 and owner != OBSTACLE:
+                        if (r_idx, c_idx) in center_coords:
+                            pos_weight = 1.5
+                            score += 50 if owner == player else -50
+                        elif (r_idx, c_idx) in corner_coords:
+                            pos_weight = 1.2
+                        else:
+                            pos_weight = 1.0
 
-        if depth == 0:
-            return self._evaluate(board, reserves, player, opponent, win_length, lines), None
+                        top_size = size_list[r_idx][c_idx]
+                        if owner == player:
+                            score += size_weights[top_size] * pos_weight
+                        elif owner == opponent:
+                            score -= size_weights[top_size] * pos_weight
 
-        valid_moves = get_valid_moves(board, reserves, active_player, allow_moves)
-        if not valid_moves:
-            if allow_moves:
-                return (-100000 - depth if maximizing else 100000 + depth), None
-            else:
-                opponent_moves = get_valid_moves(board, reserves, 3 - active_player, allow_moves)
-                if not opponent_moves:
-                    return 0, None  
-                score, _ = self._alphabeta(
-                    board, reserves, depth - 1, alpha, beta,
-                    not maximizing, player, opponent, active_player,
-                    allow_moves, win_length, lines
-                )
-                return score, None
+                        stack = b[r_idx, c_idx]
+                        for s in range(top_size):
+                            under_owner = stack[s]
+                            if under_owner == player:
+                                score += size_weights[s] * 0.3
+                            elif under_owner == opponent:
+                                score -= size_weights[s] * 0.3
 
-        other_player = opponent if active_player == player else player
-        ordered_moves = self._order_moves(board, valid_moves, other_player, transpose_move)
-        best_move = ordered_moves[0]
+            for p_idx in (1, 2): # player 1 or 2
+                if p_idx == player:
+                    multiplier = 1
+                else:
+                    multiplier = -1
+                # left in reserve, calculates for both players
+                left = (r[p_idx, SMALL] * 20 + r[p_idx, MEDIUM] * 40 + r[p_idx, LARGE] * 60) * 0.45
+                score += left * multiplier # -1 if min and 1 for max
 
-        if maximizing:
-            max_eval = -math.inf
-            for move in ordered_moves:
-                next_board, next_reserves = copy_state(board, reserves)
-                execute_move(next_board, next_reserves, active_player, move, allow_moves)
+            return score #we would want if player1 a very high +nb, if player2 a very low -nb
 
-                eval_score, _ = self._alphabeta(
-                    next_board, next_reserves, depth - 1, alpha, beta,
-                    False, player, opponent, active_player,
-                    allow_moves, win_length, lines
-                )
-                if eval_score > max_eval:
-                    max_eval = eval_score
-                    best_move = move
-                alpha = max(alpha, eval_score)
-                if beta <= alpha:
-                    break
-            best_score = max_eval
-        else:
-            min_eval = math.inf
-            for move in ordered_moves:
-                next_board, next_reserves = copy_state(board, reserves)
-                execute_move(next_board, next_reserves, active_player, move, allow_moves)
+        # how we order the moves for minimax
+        def score_move(owners_arr, sizes_arr, current_p, move, depth): # for curr depth on the ids
+            score = 0
+            other_p = opponent if current_p == player else player
+            grid_size = owners_arr.shape[0]
+            size_weights = (2, 5, 10)
+            dest = move.dest # tuple
 
-                eval_score, _ = self._alphabeta(
-                    next_board, next_reserves, depth - 1, alpha, beta,
-                    True, player, opponent, active_player,
-                    allow_moves, win_length, lines
-                )
-                if eval_score < min_eval:
-                    min_eval = eval_score
-                    best_move = move
-                beta = min(beta, eval_score)
-                if beta <= alpha:
-                    break
-            best_score = min_eval
+            if dest is not None:
+                row, col = dest
+                #reward gobbling an opponent piece
+                if int(owners_arr[row, col]) == other_p:
+                    target_size = int(sizes_arr[row, col])
+                    target_weight = size_weights[target_size] if 0 <= target_size < len(size_weights) else 10
+                    score += 75 + target_weight
+                # heuristics
+                if row in (1, 2) and col in (1, 2):
+                    score += 50 # centers +50
+                elif row in (0, grid_size - 1) and col in (0, grid_size - 1):
+                    score += 30 # corners +30
 
-        if best_score <= initial_alpha:
-            flag = ALPHA
-        elif best_score >= beta:
-            flag = BETA
-        else:
-            flag = EXACT
-        self.transpose[key] = (depth, flag, best_score, best_move)
-
-        return best_score, best_move
-
-    def _order_moves(self, board: np.ndarray, moves: list[Move],
-                     other_player: int, transpose_move: Move | None) -> list[Move]:
-        owners, _ = top_view(board)
-        own_list = owners.tolist()
-
-        def priority(m: Move) -> int:
-            if transpose_move is not None and m == transpose_move:
-                return 10000  
-            score = m.size * 10
-            r, c = m.dest
-            if own_list[r][c] == other_player:
-                score += 15  
-            if r in (1, 2) and c in (1, 2):
+            #new move 
+            if move.src is None:
                 score += 10
-            if r in (0, BOARD_SIZE - 1) and c in (0, BOARD_SIZE - 1):
-                score += 8  
-            if m.src is None:
-                score += 5    
+
+            if depth in best_table and move in best_table[depth]:
+                score += 100
             return score
 
-        return sorted(moves, key=priority, reverse=True)
+        # order the moves
+        def get_ordered_moves(b, r, current_p, depth):
+            moves = get_valid_moves(b, r, current_p)
+            if not moves:
+                return []
+            owners_arr, sizes_arr = top_view(b)
+            return sorted(moves, key=lambda m: score_move(owners_arr, sizes_arr, current_p, m, depth), reverse=True)
+        #used sorted with lambda cite:
+        # https://www.varsitytutors.com/learner/subjects/python/lessons/sorted-with-key-functions
 
-    def _evaluate(self, board: np.ndarray, reserves: np.ndarray,
-                  player: int, opponent: int, win_length: int, lines) -> float:
-        owners, sizes = top_view(board)
-        own_list = owners.tolist()
-        size_list = sizes.tolist()
-        score = 0.0
+        # used the geeks pseudocode, also saw the code (also AI lol to make it nicer and safer?)
+        # https://www.geeksforgeeks.org/dsa/minimax-algorithm-in-game-theory-set-4-alpha-beta-pruning/
+        def minimax(b, r, depth, alpha, beta, maximizing_player, current_player, last_mover):
+            if time.perf_counter() >= max_time: # safer to make sure dont exceed time (risk a random move otw)
+                raise TimeoutError("Search time exceeded") #suggesteed by AI for safety
 
-        for line in lines:
-            player_count = 0
-            opponent_count = 0
-            player_large = 0
-            opponent_large = 0
-            blocked = False
+            w = check_winner(b, last_mover) # check if already have a winner without rec
+            if w == player:
+                return 10000 + depth, None
+            if w == opponent:
+                return -10000 - depth, None
+            # want a high depth bc means we look more ahead
+            if depth == 0: # no winner yet, look at board
+                return eval_board(b, r), None
+            # get valid moves and order them
+            valid_moves_node = get_ordered_moves(b, r, current_player, depth)
+            if not valid_moves_node:
+                return 0, None
+            # choose first one, wil update later
+            best_m = valid_moves_node[0]
+            # we are max rn
+            if maximizing_player:
+                max_eval = -float('inf')
+                for move in valid_moves_node:
+                    nb, nr = copy_state(b, r) # get a cop to try it out
+                    execute_move(nb, nr, current_player, move)
 
-            for r, c in line:
-                o = own_list[r][c]
-                if o == OBSTACLE:
-                    blocked = True
-                    break
-                elif o == player:
-                    player_count += 1
-                    if size_list[r][c] == LARGE:
-                        player_large += 1
-                elif o == opponent:
-                    opponent_count += 1
-                    if size_list[r][c] == LARGE:
-                        opponent_large += 1
-            if blocked:
-                continue
-           
-            # Prioritizing blocking and try to stop the opponent expansion
-            if player_count > 0 and opponent_count == 0: # Attack
-                score += (14 ** player_count) + (player_large * 5)
-            elif opponent_count > 0 and player_count == 0: # Defense
-                score -= (15 ** opponent_count) + (opponent_large * 6)
-               
-        size_weights = (2, 5, 10)
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                top_owner = own_list[r][c]
-                if top_owner == OBSTACLE:
-                    continue
-               
-                # Center: 2X2
-                if r in (1, 2) and c in (1, 2):
-                    position_weight = 1.5
-                # Corner
-                elif r in (0, BOARD_SIZE - 1) and c in (0, BOARD_SIZE - 1):
-                    position_weight = 1.2
-                # Edges
-                else:
-                    position_weight = 1.0
+                    # min's turn sim
+                    eval_score, _ = minimax(nb, nr, depth - 1, alpha, beta, False, opponent if current_player == player else player, current_player)
+                    if eval_score > max_eval:
+                        max_eval = eval_score
+                        best_m = move
+                    alpha = max(alpha, eval_score) # update alpha
+                    # prunning part
+                    if beta <= alpha:
+                        if depth not in best_table:
+                            best_table[depth] = [] # record on best_table (no other good moves at this depth)
+                        if move not in best_table[depth]:
+                            best_table[depth].insert(0, move) # insert currmove to best_table at beginning
+                        if len(best_table[depth]) > 2:
+                            best_table[depth].pop()
+                        break
+                return max_eval, best_m
+            # we are min , similar to max part
+            else:
+                min_eval = float('inf')
+                for move in valid_moves_node:
+                    nb, nr = copy_state(b, r)
+                    execute_move(nb, nr, current_player, move)
 
-                top_size = size_list[r][c]
-               
-                if top_owner == player:
-                    score += size_weights[top_size] * position_weight
-                elif top_owner == opponent:
-                    score -= size_weights[top_size] * position_weight
-               
-                stack = board[r, c]
-               
-               
-                for s in range(top_size):
-                    under_owner = stack[s]
-                    if under_owner == player:
-                        score += size_weights[s] * 0.3
-                    elif under_owner == opponent:
-                        score -= size_weights[s] * 0.3
-               
-        for s in (SMALL, MEDIUM, LARGE):
-            score += (int(reserves[player, s]) - int(reserves[opponent, s])) * (size_weights[s] * 0.45)
-        return score
+                    eval_score, _ = minimax(nb, nr, depth - 1, alpha, beta, True, opponent if current_player == player else player, current_player)
+                    if eval_score < min_eval:
+                        min_eval = eval_score
+                        best_m = move
+                    beta = min(beta, eval_score)
+                    # prunning part
+                    if beta <= alpha:
+                        if depth not in best_table:
+                            best_table[depth] = []
+                        if move not in best_table[depth]:
+                            best_table[depth].insert(0, move)
+                        if len(best_table[depth]) > 2:
+                            best_table[depth].pop()
+                        break
+                return min_eval, best_m
+
+        # IDS for search helps with timing :)
+        max_depth = 4 # could change but within time, this has worked so far
+        for current_depth in range(1, max_depth + 1): # look ahead up to max
+            try:
+                _, move = minimax(board, reserves, current_depth, -float('inf'), float('inf'), True, player, opponent)
+                if move is not None and move in valid_moves:
+                    best_move = move
+            except TimeoutError: # if run out of time, break
+                break
+            if time.perf_counter() >= max_time: # second break in case super close of 2s
+                break
+        return best_move
