@@ -1,8 +1,8 @@
 """Student agent: edit ONLY this file."""
 from agents.agent import Agent
 from store import register_agent
-from helpers import (Move, get_valid_moves, execute_move, check_winner,
-                     check_endgame, random_move, copy_state, top_view, LINES, state_key)
+from helpers import (Move, get_valid_moves, execute_move, check_winner, has_line,
+                     check_endgame, random_move, copy_state, top_view, LINES, state_key, get_top, check_move_validity)
 from constants import *
 import numpy as np
 import time
@@ -27,7 +27,7 @@ class StudentAgent(Agent):
         self.name = "StudentAgent"
        
         #----------------------------------------------------------------
-        self.time_margin = 0.20
+        self.time_margin = 0.25
         self.deadline = 0.0
         self.nodes_visited = 0
         # state_key(board, reserves, active_player), [transpose_depth, transpose_flag,
@@ -62,6 +62,7 @@ class StudentAgent(Agent):
         if len(valid_moves) == 1:
             return valid_moves[0]
       #—-------------------Part from Sofia------------------------ 
+      
         for mv in valid_moves:
             b, r = copy_state(board, reserves)
             execute_move(b, r, player, mv, allow_moves)
@@ -158,6 +159,8 @@ class StudentAgent(Agent):
         if maximizing:
             max_eval = -math.inf
             for move in ordered_moves:
+                if not check_move_validity(board,reserves,active_player,move):
+                    continue
                 next_board, next_reserves = copy_state(board, reserves)
                 execute_move(next_board, next_reserves, active_player, move, allow_moves)
 
@@ -204,9 +207,9 @@ class StudentAgent(Agent):
 
     def _order_moves(self, board: np.ndarray, moves: list[Move],
                      other_player: int, transpose_move: Move | None) -> list[Move]:
-        owners, sizes = top_view(board)
-        own_list = owners.tolist()
-        size_list = sizes.tolist()
+        #owners, sizes = top_view(board)
+        #own_list = owners.tolist()
+        #size_list = sizes.tolist()
         size_weights = (2, 5, 10)
 
         def priority(m: Move) -> int:
@@ -215,11 +218,19 @@ class StudentAgent(Agent):
             score = m.size * 10
             r, c = m.dest
 
-            # Reward gobbling an opponent piece, weighted by the size of the covered piece
-            if own_list[r][c] == other_player:
-                target_size = size_list[r][c]
+            top_owner,top_size=get_top(board,r,c)
+            if top_owner==other_player:
+                target_size=top_size
                 if 0<=target_size<len(size_weights):
-                    score += 25 + size_weights[target_size]
+                    score+=25+size_weights[target_size]
+            
+            
+            
+            # Reward gobbling an opponent piece, weighted by the size of the covered piece
+            #if own_list[r][c] == other_player:
+             #   target_size = size_list[r][c]
+              #  if 0<=target_size<len(size_weights):
+               #     score += 25 + size_weights[target_size]
 
             if r in (1, 2) and c in (1, 2):
                 score += 15
@@ -240,6 +251,12 @@ class StudentAgent(Agent):
         score = 0.0
         threat_len = win_length - 1
 
+        if has_line(owners,player):
+            score+=40000
+        if has_line(owners,opponent):
+            score-=40000
+        
+        
         for line in lines:
             player_count = 0
             opponent_count = 0
