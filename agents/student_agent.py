@@ -116,6 +116,7 @@ class StudentAgent(Agent):
 
         active_player = player if maximizing else opponent
         initial_alpha = alpha
+        initial_beta = beta
 
         key = state_key(board, reserves, active_player)
         transpose_move = None
@@ -193,7 +194,7 @@ class StudentAgent(Agent):
 
         if best_score <= initial_alpha:
             flag = ALPHA
-        elif best_score >= beta:
+        elif best_score >= initial_beta:
             flag = BETA
         else:
             flag = EXACT
@@ -217,7 +218,8 @@ class StudentAgent(Agent):
             # Reward gobbling an opponent piece, weighted by the size of the covered piece
             if own_list[r][c] == other_player:
                 target_size = size_list[r][c]
-                score += 25 + size_weights[target_size]
+                if 0<=target_size<len(size_weights):
+                    score += 25 + size_weights[target_size]
 
             if r in (1, 2) and c in (1, 2):
                 score += 15
@@ -292,7 +294,7 @@ class StudentAgent(Agent):
                     score -= size_weights[top_size] * position_weight
 
                 stack = board[r, c]
-                for s in range(top_size):
+                for s in range(min(int(top_size), len(stack))):
                     under_owner = stack[s]
                     if under_owner == player:
                         score += size_weights[s] * 0.3
